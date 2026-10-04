@@ -5,4 +5,7 @@
     <Project Path="src/FlowForge.Domain/FlowForge.Domain.csproj" />
     <Project Path="src/FlowForge.Infrastructure/FlowForge.Infrastructure.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FlowForge.Domain.Tests/FlowForge.Domain.Tests.csproj" />
+  </Folder>
 </Solution>
