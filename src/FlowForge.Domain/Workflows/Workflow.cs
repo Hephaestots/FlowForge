@@ -1,3 +1,5 @@
+using FlowForge.Domain.Common;
+
 namespace FlowForge.Domain.Workflows;
 
 public sealed class Workflow
@@ -9,12 +11,20 @@ public sealed class Workflow
     
     public Workflow(Guid id, string name, string? description, DateTime createdAtUtc)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException($"'{nameof(name)}' cannot be null or whitespace.", nameof(name));
+        DomainGuard.NotNullOrWhiteSpace(name, nameof(name));
         
         Id = id;
         Name = name;
         Description = description;
         CreatedAtUtc = createdAtUtc;
     }
+
+    public void Rename(string newName)
+    {
+        DomainGuard.NotNullOrWhiteSpace(newName, nameof(newName));
+        
+        Name = newName;
+    }
+    
+    public void UpdateDescription(string? description) =>  Description = description;
 }
