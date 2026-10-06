@@ -84,4 +84,21 @@ public sealed class WorkflowTests
         // Assert
         Assert.Equal("My workflow description.", workflow.Description);
     }
+    
+    [Fact]
+    public void UpdateDescription_WhenDescriptionIsNull_ShouldClearDescription()
+    {
+        // Arrange
+        var workflow = new Workflow(
+            Guid.NewGuid(),
+            "workflow 1",
+            "My workflow description.",
+            DateTime.UtcNow);
+
+        // Act
+        workflow.UpdateDescription(null);
+
+        // Assert
+        Assert.Null(workflow.Description);
+    }
 }
