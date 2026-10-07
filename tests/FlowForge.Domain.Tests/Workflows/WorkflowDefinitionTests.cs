@@ -6,80 +6,127 @@ namespace FlowForge.Domain.Tests.Workflows;
 public sealed class WorkflowDefinitionTests
 {
     [Fact]
-    public void Constructor_WithValidValues_ShouldCreateWorkflowDefinition()
+    public void Create_WithValidValues_ShouldCreateWorkflowDefinition()
     {
         // Arrange
-        var id = Guid.NewGuid();
-        var createdAtUtc = DateTime.UtcNow;
-        
+        var createdAt = DateTimeOffset.UtcNow;
+
         // Act
-        WorkflowDefinition workflow = new(
-            id, 
-            "  My workflow  ", 
-            "My workflow description", 
-            createdAtUtc);
-        
+        var workflow = WorkflowDefinition.Create(
+            "  My workflow  ",
+            "My workflow description",
+            createdAt);
+
         // Assert
-        Assert.Equal(id, workflow.Id);
-        Assert.Equal(new DisplayName("My workflow"), workflow.Name);
+        Assert.Equal("My workflow", workflow.Name.Value);
         Assert.Equal("My workflow description", workflow.Description);
-        Assert.Equal(createdAtUtc, workflow.CreatedAtUtc);
+        Assert.Equal(createdAt, workflow.CreatedAt);
     }
 
     [Fact]
-    public void Constructor_WhenIdIsEmpty_ShouldThrowDomainException()
+    public void Create_ShouldGenerateANewId()
     {
+        // Act
+        var first = WorkflowDefinition.Create("workflow 1", null, DateTimeOffset.UtcNow);
+        var second = WorkflowDefinition.Create("workflow 1", null, DateTimeOffset.UtcNow);
+
         // Assert
-        Assert.Throws<DomainException>(() => new WorkflowDefinition(
-            Guid.Empty,
+        Assert.NotEqual(first.Id, second.Id);
+    }
+
+    [Fact]
+    public void Create_WithNonUtcOffset_ShouldNormalizeCreatedAtToUtc()
+    {
+        // Arrange
+        var createdAt = new DateTimeOffset(2026, 10, 7, 12, 0, 0, TimeSpan.FromHours(2));
+
+        // Act
+        var workflow = WorkflowDefinition.Create("My workflow", null, createdAt);
+
+        // Assert
+        Assert.Equal(TimeSpan.Zero, workflow.CreatedAt.Offset);
+        Assert.Equal(new DateTimeOffset(2026, 10, 7, 10, 0, 0, TimeSpan.Zero), workflow.CreatedAt);
+    }
+
+    [Fact]
+    public void Rehydrate_WithNonUtcOffset_ShouldNormalizeCreatedAtToUtc()
+    {
+        // Arrange
+        var createdAt = new DateTimeOffset(2026, 10, 7, 12, 0, 0, TimeSpan.FromHours(-5));
+
+        // Act
+        var workflow = WorkflowDefinition.Rehydrate(WorkflowDefinitionId.New(), "My workflow", null, createdAt);
+
+        // Assert
+        Assert.Equal(TimeSpan.Zero, workflow.CreatedAt.Offset);
+        Assert.Equal(new DateTimeOffset(2026, 10, 7, 17, 0, 0, TimeSpan.Zero), workflow.CreatedAt);
+    }
+
+    [Fact]
+    public void Rehydrate_WithValidValues_ShouldRehydrateWorkflowDefinition()
+    {
+        // Arrange
+        var id = WorkflowDefinitionId.New();
+        var createdAt = DateTimeOffset.UtcNow;
+
+        // Act
+        var workflow = WorkflowDefinition.Rehydrate(
+            id,
+            "My workflow",
+            "My workflow description",
+            createdAt);
+
+        // Assert
+        Assert.Equal(id, workflow.Id);
+        Assert.Equal("My workflow", workflow.Name.Value);
+        Assert.Equal("My workflow description", workflow.Description);
+        Assert.Equal(createdAt, workflow.CreatedAt);
+    }
+
+    [Fact]
+    public void Rehydrate_WhenIdIsNull_ShouldThrowDomainException()
+    {
+        Assert.Throws<DomainException>(() => WorkflowDefinition.Rehydrate(
+            null!,
             "My workflow",
             null,
-            DateTime.UtcNow));
+            DateTimeOffset.UtcNow));
     }
 
     [Fact]
     public void Rename_WithValidName_ShouldRenameWorkflowDefinition()
     {
         // Arrange
-        var workflow = new WorkflowDefinition(
-            Guid.NewGuid(),
-            "Old name",
-            null,
-            DateTime.UtcNow);
-        
+        var workflow = WorkflowDefinition.Create("Old name", null, DateTimeOffset.UtcNow);
+
         // Act
         workflow.Rename("  New name  ");
-        
+
         // Assert
-        Assert.Equal(new DisplayName("New name"), workflow.Name);
+        Assert.Equal("New name", workflow.Name.Value);
     }
 
     [Fact]
     public void UpdateDescription_WhenDescriptionIsValidString_ShouldUpdateWorkflowDefinitionDescription()
     {
         // Arrange
-        var workflow = new WorkflowDefinition(
-            Guid.NewGuid(),
-            "workflow 1",
-            null,
-            DateTime.UtcNow);
-        
+        var workflow = WorkflowDefinition.Create("workflow 1", null, DateTimeOffset.UtcNow);
+
         // Act
         workflow.UpdateDescription("My workflow description.");
-        
+
         // Assert
         Assert.Equal("My workflow description.", workflow.Description);
     }
-    
+
     [Fact]
     public void UpdateDescription_WhenDescriptionIsNull_ShouldClearWorkflowDefinitionDescription()
     {
         // Arrange
-        var workflow = new WorkflowDefinition(
-            Guid.NewGuid(),
+        var workflow = WorkflowDefinition.Create(
             "workflow 1",
             "My workflow description.",
-            DateTime.UtcNow);
+            DateTimeOffset.UtcNow);
 
         // Act
         workflow.UpdateDescription(null);

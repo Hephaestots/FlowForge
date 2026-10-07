@@ -52,6 +52,19 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - **Definition-name uniqueness is an Application/DB concern (phase 3+).** Plan: the domain computes a normalized key (`Value.ToUpperInvariant()`) stored next to the name, with a plain unique index on that column — not `lower(name)` or `citext`, whose case folding can disagree with .NET.
 - **Within a version, only step IDs are unique.** Step display names may repeat; no invariant checks them (decided 2026-10-07).
 
+### Identifiers
+- **Strongly-typed IDs as `sealed record` classes** (not structs: `default(T)` would bypass the guard). Private constructor, get-only `Value`; no public parameterless constructor.
+- **Guid-backed IDs** (`WorkflowDefinitionId`, later `InstanceId`): `New()` generates `Guid.CreateVersion7()`; `From(Guid)` is the guarded entry point (rejects `Guid.Empty`) used for rehydration, JSON and the API edge.
+- **`StepId` is a human-chosen slug** (e.g. `approve-request`), not a Guid. One validating factory, no generator. Distinct from the handler key. Slug format rule and when it freezes are still open.
+- **No generic `Id<T>` base yet.** Revisit at the third Guid-backed ID or in phase 3 (one EF/JSON converter for all IDs).
+- **Entities have two named entry points**: `Create(...)` (generates the ID) and `Rehydrate(id, ...)` (takes a typed ID, never reads the clock or generates). Constructors are private; `Rehydrate` rejects a null ID.
+
+### Time
+- **No services in the domain.** Entities never receive a `TimeProvider`; they receive a `DateTimeOffset`.
+- The private constructor **normalizes to UTC** (`ToUniversalTime()`), for `Create` and `Rehydrate` alike: the offset carries no meaning here, and normalizing never makes a stored row fail to load. Tests assert on `.Offset`, since `DateTimeOffset` equality ignores it.
+- **The Application layer supplies the time** via `TimeProvider.GetUtcNow()` (wired up in phase 4; `FakeTimeProvider` in Application tests).
+- **No `DateTime` for instants anywhere** (code, tests, DTOs, EF mappings). The domain can't detect `DateTimeKind.Unspecified` after the implicit conversion, so the rule is enforced at the callers. Enforcement mechanism (BannedApiAnalyzers vs convention) is still open.
+
 ### Execution
 - **Async-capable handler contract from day one**: a handler returns an outcome — `Completed(transitionKey, output)`, `Waiting(waitKey)` (human task/signal/timer), or `Failed(reason, retryable)`.
 - **Inline execution first**; queues/workers come later and must only change the executor, not the domain or handlers.
@@ -93,23 +106,21 @@ Open questions I must answer (ask me about them in reviews):
 
 ## Outstanding review items on existing code
 
-Last reviewed 2026-10-07 (build clean, 24 tests passing). Ask me about the open decisions in reviews.
+Last reviewed 2026-10-07 (build clean, 34 tests passing). Ask me about the open decisions in reviews.
 
 ### Open decisions
-- **ID generation**: adopt `Guid.CreateVersion7()`? Who generates new IDs — a static factory on the entity or the Application layer? The constructor keeps accepting an ID for rehydration.
-- **Strongly-typed IDs** (`WorkflowDefinitionId`, `StepId`, later `InstanceId`) vs raw `Guid`s — decide before the graph model adds more of them.
+- **`StepId` slug rules**: allowed characters/length (leaning lowercase kebab-case so equality is plain ordinal); frozen from creation or only after `Publish()`? Should rehydration use the same validation as creation (a tightened rule must not make old stored data unloadable)?
+- **`DateTime` ban enforcement**: BannedApiAnalyzers (`BannedSymbols.txt`) on Domain/Application, or convention only?
 - **Entity signatures**: the constructor and `Rename` take `string` while `Name` returns `DisplayName`. Pick one style before `StepDefinition` copies it.
 - **`Description` normalization**: `""` and `"   "` are stored as given. Does blank collapse to `null`?
 - **xUnit v3**: still on v2 (2.9.3). Migrate or stay?
 
 ### To do
-- `DateTime` → `DateTimeOffset` on `CreatedAtUtc` (rename to `CreatedAt`); normalize to UTC or reject a non-zero offset. Later inject `TimeProvider` in Application.
-- `DomainGuard`: `paramName` is captured but unused in both guards — put it in the message or drop the parameter.
-- `WorkflowDefinitionTests`: the two wiring tests compare `DisplayName` objects, which ignore casing — assert on `.Value`.
+- Phase 4: inject `TimeProvider` in Application and pass `GetUtcNow()` into `Create`.
 - Primary-constructor parameters stay in scope in `WorkflowDefinition`; reading `name` instead of `Name` in a method would silently use stale data. Keep in mind as entities grow.
 
 ### Nits
-- Double space in `=>  Description` (`WorkflowDefinition.cs`).
+- Trailing whitespace on blank lines in a few files; missing final newline in `WorkflowDefinitionId.cs`.
 - Template comments in `Program.cs`; `FlowForge.Api.http` is still tracked.
 
 ### Done
@@ -119,6 +130,10 @@ Last reviewed 2026-10-07 (build clean, 24 tests passing). Ask me about the open 
 - `DisplayName` value object; name normalization decided (see "Naming and uniqueness").
 - Test naming (`_Should...`); tests use `[Theory]` where data-driven and mirror the source folders (`Common/`, `Workflows/`).
 - Removed the redundant Infrastructure → Domain reference.
+- `WorkflowDefinitionId` (typed, Guid v7) with `New()`/`From()`; `WorkflowDefinition` uses it, with `Create`/`Rehydrate` and a null-ID guard (see "Identifiers").
+- `CreatedAtUtc` → `CreatedAt` (`DateTimeOffset`), normalized to UTC, tested for both entry points (see "Time").
+- `DomainGuard`: `paramName` now used in messages; added `AgainstNull`.
+- Wiring tests assert on `.Name.Value`.
 
 ## Environment
 

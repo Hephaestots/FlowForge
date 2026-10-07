@@ -4,12 +4,20 @@ namespace FlowForge.Domain.Common;
 
 internal static class DomainGuard
 {
+    public static T AgainstNull<T>(
+        T? value,
+        [CallerArgumentExpression(nameof(value))] string? paramName = null)
+        where T : class
+    {
+        return value ?? throw new DomainException($"{paramName} cannot be null.");
+    }
+    
     public static string AgainstNullOrWhiteSpace(
         string? value,
         [CallerArgumentExpression(nameof(value))] string? paramName = null)
     {
         return string.IsNullOrWhiteSpace(value) 
-            ? throw new DomainException("Value cannot be null or whitespace.") 
+            ? throw new DomainException($"{paramName} cannot be null or whitespace.") 
             : value;
     }
 
@@ -18,7 +26,7 @@ internal static class DomainGuard
         [CallerArgumentExpression(nameof(value))] string? paramName = null)
     {
         return value == Guid.Empty 
-            ? throw new DomainException("Unique identifiers can't be empty.") 
+            ? throw new DomainException($"Unique identifiers [{paramName}] can't be empty.") 
             : value;
     }
 }
