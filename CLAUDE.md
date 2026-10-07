@@ -45,7 +45,12 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - `WorkflowDefinition` — identity + metadata (name, description). Metadata is mutable.
 - `WorkflowDefinitionVersion` — the graph (steps, transitions), status `Draft` → `Published`, immutable once published.
 - `WorkflowInstance` — one run; separate aggregate; pinned to (DefinitionId, Version).
-- Current code still calls the definition `Workflow`; renaming to `WorkflowDefinition` is planned.
+
+### Naming and uniqueness
+- **`DisplayName` value object** (Domain/Common) holds every display name: trimmed, never null or whitespace, **casing preserved as entered**.
+- **Names compare case-insensitively** (`OrdinalIgnoreCase` in `Equals`/`GetHashCode`); assert on `.Value` when a test needs exact text.
+- **Definition-name uniqueness is an Application/DB concern (phase 3+).** Plan: the domain computes a normalized key (`Value.ToUpperInvariant()`) stored next to the name, with a plain unique index on that column — not `lower(name)` or `citext`, whose case folding can disagree with .NET.
+- **Within a version, only step IDs are unique.** Step display names may repeat; no invariant checks them (decided 2026-10-07).
 
 ### Execution
 - **Async-capable handler contract from day one**: a handler returns an outcome — `Completed(transitionKey, output)`, `Waiting(waitKey)` (human task/signal/timer), or `Failed(reason, retryable)`.
@@ -88,12 +93,32 @@ Open questions I must answer (ask me about them in reviews):
 
 ## Outstanding review items on existing code
 
-- Rename `Workflow` → `WorkflowDefinition`
-- Guard against `Guid.Empty`; consider `Guid.CreateVersion7()` for IDs
-- `DateTime` → `DateTimeOffset` (or enforce `DateTimeKind.Utc`); later inject `TimeProvider` in Application
-- Decide name normalization (trim?) and uniqueness (Application/DB concern)
-- Test naming consistency (`_Should...`); consider moving to xUnit v3
-- Infrastructure → Domain reference is redundant (harmless)
+Last reviewed 2026-10-07 (build clean, 24 tests passing). Ask me about the open decisions in reviews.
+
+### Open decisions
+- **ID generation**: adopt `Guid.CreateVersion7()`? Who generates new IDs — a static factory on the entity or the Application layer? The constructor keeps accepting an ID for rehydration.
+- **Strongly-typed IDs** (`WorkflowDefinitionId`, `StepId`, later `InstanceId`) vs raw `Guid`s — decide before the graph model adds more of them.
+- **Entity signatures**: the constructor and `Rename` take `string` while `Name` returns `DisplayName`. Pick one style before `StepDefinition` copies it.
+- **`Description` normalization**: `""` and `"   "` are stored as given. Does blank collapse to `null`?
+- **xUnit v3**: still on v2 (2.9.3). Migrate or stay?
+
+### To do
+- `DateTime` → `DateTimeOffset` on `CreatedAtUtc` (rename to `CreatedAt`); normalize to UTC or reject a non-zero offset. Later inject `TimeProvider` in Application.
+- `DomainGuard`: `paramName` is captured but unused in both guards — put it in the message or drop the parameter.
+- `WorkflowDefinitionTests`: the two wiring tests compare `DisplayName` objects, which ignore casing — assert on `.Value`.
+- Primary-constructor parameters stay in scope in `WorkflowDefinition`; reading `name` instead of `Name` in a method would silently use stale data. Keep in mind as entities grow.
+
+### Nits
+- Double space in `=>  Description` (`WorkflowDefinition.cs`).
+- Template comments in `Program.cs`; `FlowForge.Api.http` is still tracked.
+
+### Done
+- Renamed `Workflow` → `WorkflowDefinition`.
+- `Guid.Empty` guard on `Id`, tested.
+- `DomainException` replaces `ArgumentException` in the domain.
+- `DisplayName` value object; name normalization decided (see "Naming and uniqueness").
+- Test naming (`_Should...`); tests use `[Theory]` where data-driven and mirror the source folders (`Common/`, `Workflows/`).
+- Removed the redundant Infrastructure → Domain reference.
 
 ## Environment
 
