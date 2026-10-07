@@ -1,3 +1,4 @@
+using FlowForge.Domain.Common;
 using FlowForge.Domain.Workflows;
 
 namespace FlowForge.Domain.Tests;
@@ -12,7 +13,7 @@ public sealed class WorkflowTests
         var createdAtUtc = DateTime.UtcNow;
         
         // Act
-        Workflow workflow = new(
+        WorkflowDefinition workflow = new(
             id, 
             "My workflow", 
             "My workflow description", 
@@ -29,7 +30,7 @@ public sealed class WorkflowTests
     public void Constructor_WithEmptyName_ThrowsArgumentException()
     {
         // Assert
-        Assert.Throws<ArgumentException>(() => new Workflow(
+        Assert.Throws<DomainException>(() => new WorkflowDefinition(
             Guid.NewGuid(),
             " ",
             null,
@@ -40,7 +41,7 @@ public sealed class WorkflowTests
     public void Rename_WithValidName_ShouldRenameWorkflow()
     {
         // Arrange
-        var workflow = new Workflow(
+        var workflow = new WorkflowDefinition(
             Guid.NewGuid(),
             "Old name",
             null,
@@ -57,7 +58,7 @@ public sealed class WorkflowTests
     public void Rename_WhenNameIsEmpty_ShouldThrowArgumentException()
     {
         // Arrange
-        var workflow = new Workflow(
+        var workflow = new WorkflowDefinition(
             Guid.NewGuid(),
             "Old name",
             null,
@@ -65,14 +66,14 @@ public sealed class WorkflowTests
         
         // Act
         // Assert
-        Assert.Throws<ArgumentException>(() => workflow.Rename(" "));
+        Assert.Throws<DomainException>(() => workflow.Rename(" "));
     }
 
     [Fact]
     public void UpdateDescription_WhenDescriptionIsValidString_ShouldUpdateDescription()
     {
         // Arrange
-        var workflow = new Workflow(
+        var workflow = new WorkflowDefinition(
             Guid.NewGuid(),
             "workflow 1",
             null,
@@ -89,7 +90,7 @@ public sealed class WorkflowTests
     public void UpdateDescription_WhenDescriptionIsNull_ShouldClearDescription()
     {
         // Arrange
-        var workflow = new Workflow(
+        var workflow = new WorkflowDefinition(
             Guid.NewGuid(),
             "workflow 1",
             "My workflow description.",
