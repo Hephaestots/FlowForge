@@ -1,6 +1,7 @@
 using FlowForge.Domain.Common;
+using FlowForge.Domain.Workflows;
 
-namespace FlowForge.Domain.Tests.Common;
+namespace FlowForge.Domain.Tests.Workflows;
 
 public sealed class VersionStatusTests
 {

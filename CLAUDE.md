@@ -61,21 +61,58 @@ Don't build ahead of the current phase. Flag it if I'm about to.
   - **Planned persistence (phase 3+):** graph as one `jsonb` column (EF owned type mapped to JSON) on the version row, so loading all versions is a single query.
 - **`StepDefinition` and `Transition` are immutable records**; edits are done by replacement. Consequence: creating draft N+1 from version N copies the *collection* (a new list), and sharing the immutable instances is safe (no deep copy). Tests: after editing v2 (add a node, remove the start node), v1's graph equals its snapshot from before the edit (records give value equality); and a v2 transition to a step that exists only in v1 fails v2's validation. (EF owned types can't have two owners, so persistence will need separate instances per version — a phase 3 concern.)
   - **Guarded factory, closed against `with`.** `StepDefinition` (and `Transition` as needed) is a `sealed record` with a private constructor and **get-only properties, no `init` accessor**, so `step with { ... }` does not compile and can't bypass validation. Edits go through explicit methods (e.g. `step.WithHandlerKey(key)`) that route through the same factory and return a new instance. Factory enforces: valid `StepId` slug, valid `HandlerKey`, non-null display name.
-  - **`HandlerKey` is a value object** (own type, like `DisplayName`), distinct from `StepId`. Its normalization/format/casing rules are still open.
-  - **Graph-level checks** (unique step IDs, transitions reference existing steps, one start, reachability) belong to `Version.Publish()`; whether they are also checked at add-time on a draft is still open.
+  - **`HandlerKey` is a value object** (own type, like `DisplayName`), distinct from `StepId`. Rules are in "Identifiers".
+  - **Graph-level checks** are split between mutation time and `Validate()`; see "Graph validation".
 - **CQRS direction:** keep the child-entity model for writes; add a read-side query that loads one version directly for execution (phase 4+, don't build ahead). The executor loads by **pinned `(DefinitionId, Version)`**, not "the published one": running instances stay on retired versions. "The published one" is only for starting a new instance. Published graphs are immutable, so a loaded version is cacheable forever under that key.
 - `WorkflowInstance` — one run; separate aggregate; pinned to (DefinitionId, Version).
+
+### Graph validation (decided 2026-10-08)
+- **A draft may be broken.** An empty draft is the natural starting state; graph problems are *reported*, not prevented, until `Publish()`.
+- **Start step is a pointer**: `WorkflowDefinitionVersion.StartStepId`, nullable, set explicitly with `SetStart(stepId)` (no auto-assign of the first step; can be added later if a designer UI wants it). It is not a flag on `StepDefinition`.
+- **`Validate()` returns a list of issues; `Publish()` throws.** `Publish()` throws a `DomainException` subclass that carries the issue list, so callers and tests assert on codes, not message text.
+- **Issue = code + message + subject.** The code identifies the *rule*; one rule can produce several issues.
+  - **Subject is a closed set of two nullable properties, not a polymorphic type:** `StepId? Step` and `TransitionRef? Transition`. `TransitionRef(From, Key, To?)` leaves `To` null for group issues (`AmbiguousOutcome`) and sets it for per-edge issues (`TransitionTargetNotFound`). A UI switches on the code and reads whichever property applies.
+- **Issue codes are a closed singleton set**, same pattern as `VersionStatus` (private constructor, static instances, `FromName`/`From(code)`). The code's string value is stable and may be persisted or exposed, but there is no lookup table.
+- **Rejected at mutation time (not issues):**
+  - A duplicate `StepId` in `AddStep` (a keyed collection cannot hold two). So "unique step IDs" is *not* a `Validate()` rule.
+  - Any edit to a non-draft version (invariant 6).
+- **Reported by `Validate()`** (a draft can hold all of these):
+  - `StartStepMissing`: no start pointer set.
+  - `StartStepNotFound`: the start pointer references a step that does not exist.
+  - `TransitionSourceNotFound` and `TransitionTargetNotFound`: separate codes on purpose, as precise as possible.
+  - `NoEndStep`: no step without outgoing transitions.
+  - `StepUnreachable`: a step not reachable from the start.
+  - `StepCannotReachEnd`: a step from which no end step can be reached (needed because cycles are allowed).
+  - `AmbiguousOutcome`: two or more transitions with the same `(From, TransitionKey)`, regardless of target (routing is a function of those two; even when both lead to the same step, one is redundant). **One issue per `(From, key)` group**, subject `Transition` with `To == null`. An exact duplicate edge is just another case; no special handling. `Validate()` only, never rejected at add-time.
+- **`RemoveStep` may leave things dangling** (the start pointer, transitions pointing at the removed step); `Validate()` reports it. No cascade, no rejection.
+- **An empty draft reports both `StartStepMissing` and `NoEndStep`.** That noise is accepted.
+- **Skip derived issues when the root cause is already reported:** `StepUnreachable` is not reported while the start is missing or dangling. `Validate()` is therefore not a set of fully independent checks; ordering matters.
+- **Cycles are allowed** (e.g. rejected → edit → resubmit). Because of that, "at least one end step" is not enough: every step must be able to reach an end step (`StepCannotReachEnd`).
+- **Self-loops (`A → A`) are not allowed.** Enforced in the `Transition` factory at create time (needs no graph context), so it is not a `Validate()` code. `A → B → A` stays legal. Retrying the same step is the handler's `Failed(reason, retryable)`, not a graph edge.
+- **Transitions are stored in a `List`** (not a set keyed by `(From, Key)`, since a draft may hold ambiguous edges). Removal is by full value (`From`, `Key`, `To`), which works because records have value equality; `List.Remove` drops the first match and identical edges are interchangeable. No `TransitionId` until something must reference one edge from elsewhere.
+- **More skip rules (derived issues are not reported when the root cause is):**
+  - `StepCannotReachEnd` is skipped while `NoEndStep` is reported.
+  - Dangling edges (source or target not found) are ignored as traversable edges, and `StepCannotReachEnd` is suppressed for a step whose outgoing edge is dangling: `TransitionTargetNotFound` already reports it, and a second issue would break the `Assert.Single` style of test.
+- **`Rehydrate` throws on duplicate `StepId`s** (structural guard: a keyed collection cannot hold them). It never runs `Validate()`, because stored drafts may legitimately be broken and must still load.
+- **`StepId` is frozen from creation.** To change one, remove the step and add a new one, rewriting its edges by hand. No `RenameStep` until the designer needs it; display names are what get renamed.
+- **Reactivation re-runs `Validate()`** like the first publish (see "Version lifecycle").
 
 ### Naming and uniqueness
 - **`DisplayName` value object** (Domain/Common) holds every display name: trimmed, never null or whitespace, **casing preserved as entered**.
 - **Names compare case-insensitively** (`OrdinalIgnoreCase` in `Equals`/`GetHashCode`); assert on `.Value` when a test needs exact text.
 - **Definition-name uniqueness is an Application/DB concern (phase 3+).** Plan: the domain computes a normalized key (`Value.ToUpperInvariant()`) stored next to the name, with a plain unique index on that column — not `lower(name)` or `citext`, whose case folding can disagree with .NET.
+- **`Description` is free text, so it is the one tolerant place** (decided 2026-10-08): trim; null or whitespace-only becomes empty (never `null`); never change case; cap at 1000 characters and reject beyond it. A plain `string` property, not a value object (no invariants worth a type). Not used in equality or routing.
 - **Within a version, only step IDs are unique.** Step display names may repeat; no invariant checks them (decided 2026-10-07).
 
 ### Identifiers
 - **Strongly-typed IDs as `sealed record` classes** (not structs: `default(T)` would bypass the guard). Private constructor, get-only `Value`; no public parameterless constructor.
 - **Guid-backed IDs** (`WorkflowDefinitionId`, later `InstanceId`): `New()` generates `Guid.CreateVersion7()`; `From(Guid)` is the guarded entry point (rejects `Guid.Empty`) used for rehydration, JSON and the API edge.
-- **`StepId` is a human-chosen slug** (e.g. `approve-request`), not a Guid. One validating factory, no generator. Distinct from the handler key. Slug format rule and when it freezes are still open.
+- **`StepId` is a human-chosen slug** (e.g. `approve-request`), not a Guid. One validating factory, no generator. Distinct from the handler key.
+  - **Slug rule (decided 2026-10-08):** lowercase `a-z`, digits and `-` as the separator; must start with a letter; length 1 to 64; must not end with `-` or contain `--`. Illustration: `^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){0,63}$`.
+  - **Strict rejection, no normalization:** `"Approve-Request"` or `" approve "` throws, with no trimming or lowercasing. Equality is plain ordinal. Frozen from creation (see "Graph validation").
+- **`HandlerKey` rules (decided 2026-10-08):** lowercase `a-z`, digits and `-`, with `.` allowed as a namespace separator (e.g. `billing.charge-card`; the handler registry is global). Must start with a letter, 1 to 100 characters, no empty segments (`a..b`), no leading or trailing separators. Strict rejection, no normalization: `"Send-Email"` throws. `Rehydrate` stays lenient.
+- **Entity signatures take value objects, not `string`** (decided 2026-10-08): constructors, `Create`, `Rehydrate` and mutators take `DisplayName`, `StepId`, `HandlerKey` and `TransitionKey`. Validation happens once, in the value object's constructor/factory, and entities do not re-check it. Raw strings stay at the edges (API, EF converters) and are parsed into value objects immediately.
+- **`TransitionKey` is a value object**, a separate type from `StepId` that currently shares its rule (lowercase, digits, `-`; same strict rejection). Separate types so either rule can change later without touching the other, and so one can't be passed where the other belongs. No `_` until a real outcome name needs it. **No reserved `"default"` and no fallback routing for now**: that is a new semantic that interacts with `AmbiguousOutcome` and needs its own decision. `Rehydrate` stays lenient for both (see below).
 - **No generic `Id<T>` base yet.** Revisit at the third Guid-backed ID or in phase 3 (one EF/JSON converter for all IDs).
 - **Entities have two named entry points**: `Create(...)` (generates the ID) and `Rehydrate(id, ...)` (takes a typed ID, never reads the clock or generates). Constructors are private; `Rehydrate` rejects a null ID.
 - **`Rehydrate` is deliberately more lenient than `Create`** (decided 2026-10-07): a rule tightened later (slug format, handler-key format) must never make stored data unloadable, so `Create` enforces the current rules and `Rehydrate` does not re-apply them. Keep only the structural guards needed to avoid a broken object (e.g. null checks). This applies to `StepDefinition`, `Transition` and their value objects (`StepId`, `HandlerKey`), so those need a lenient rehydration path separate from the validating factory.
@@ -84,10 +121,10 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - **No services in the domain.** Entities never receive a `TimeProvider`; they receive a `DateTimeOffset`.
 - The private constructor **normalizes to UTC** (`ToUniversalTime()`), for `Create` and `Rehydrate` alike: the offset carries no meaning here, and normalizing never makes a stored row fail to load. Tests assert on `.Offset`, since `DateTimeOffset` equality ignores it.
 - **The Application layer supplies the time** via `TimeProvider.GetUtcNow()` (wired up in phase 4; `FakeTimeProvider` in Application tests).
-- **No `DateTime` for instants anywhere** (code, tests, DTOs, EF mappings). The domain can't detect `DateTimeKind.Unspecified` after the implicit conversion, so the rule is enforced at the callers. Enforcement mechanism (BannedApiAnalyzers vs convention) is still open.
+- **No `DateTime` for instants anywhere** (code, tests, DTOs, EF mappings). The domain can't detect `DateTimeKind.Unspecified` after the implicit conversion, so the rule is enforced at the callers. **Enforced at build time (decided 2026-10-08):** `Microsoft.CodeAnalysis.BannedApiAnalyzers` with a `BannedSymbols.txt` in the Domain project (and Application once it has code), so a violation is a build error, not a convention. Also ban `DateTimeOffset.UtcNow`/`Now`. Time enters the domain as a `DateTimeOffset` parameter (e.g. `Publish(at)`), never read from a clock. A `TimeProvider` (Application layer) supplies the value from outside; it is never injected into the domain. In tests, use `FakeTimeProvider` (Microsoft.Extensions.TimeProvider.Testing) only where a `TimeProvider` exists (Application).
 
 ### Execution
-- **Async-capable handler contract from day one**: a handler returns an outcome — `Completed(transitionKey, output)`, `Waiting(waitKey)` (human task/signal/timer), or `Failed(reason, retryable)`.
+- **Async-capable handler contract from day one**: a handler returns an outcome — `Completed(TransitionKey, output)` (a `TransitionKey` value object, not a raw string; a handler that builds an invalid key has a bug, which surfaces at runtime as a failed node rather than a silent mismatch; takes effect when the executor is built in phase 1, nothing earlier depends on it), `Waiting(waitKey)` (human task/signal/timer), or `Failed(reason, retryable)`.
 - **Inline execution first**; queues/workers come later and must only change the executor, not the domain or handlers.
 - **Handlers must be idempotent** (assume at-least-once execution once retries/queues exist).
 
@@ -112,17 +149,24 @@ Model the definition graph in **Domain only** (no persistence, no engine):
 - `Transition`: from step → to step + key/label (e.g. `approved` / `rejected`)
 - `Publish()` validates the graph, then freezes it
 
-Invariants enforced by `Publish()` (test-first, one failing test each):
-1. Exactly one start step
-2. Step IDs unique within a version
-3. Every transition references existing steps
-4. At least one end step (no outgoing transitions)
-5. Every step reachable from the start step
-6. Modifying steps/transitions on a published version throws
+Invariants (test-first, one failing test each). `Publish()` throws if `Validate()` reports any issue; codes are in "Graph validation":
+1. Start step set and existing (`StartStepMissing`, `StartStepNotFound`: two tests)
+2. Step IDs unique within a version (rejected by `AddStep`, not a `Validate()` rule)
+3. Every transition references existing steps (`TransitionSourceNotFound`, `TransitionTargetNotFound`: two tests)
+4. At least one end step (`NoEndStep`)
+5. Every step reachable from the start step (`StepUnreachable`; skipped while the start is missing or dangling)
+6. Modifying steps/transitions on a non-draft version throws
+7. Every step can reach an end step (`StepCannotReachEnd`; needed because cycles are allowed; skipped while `NoEndStep` is reported or for steps with a dangling outgoing edge)
+8. No two transitions share `(From, TransitionKey)` (`AmbiguousOutcome`, one issue per group; parameterize over same and different targets)
+9. A transition cannot loop on its own step (rejected by the `Transition` factory, not a `Validate()` code)
 
 Open questions I must answer (ask me about them in reviews):
 - ~~Is `WorkflowDefinitionVersion` its own aggregate?~~ Decided: child entity inside `WorkflowDefinition` (see "Model split").
-- Are cycles allowed (e.g. rejected → edit → resubmit)? If yes, how does that affect invariant 4?
+- ~~Are cycles allowed?~~ Decided: yes; every step must be able to reach an end step (see "Graph validation").
+- ~~Self-loops~~ Decided: not allowed, rejected in the `Transition` factory.
+- ~~Duplicate transition keys~~ Decided: `AmbiguousOutcome`, one issue per `(From, key)` group.
+- ~~`StepCannotReachEnd` vs `NoEndStep`~~ Decided: skipped (see "Graph validation").
+- ~~`Rehydrate` with duplicate `StepId`s~~ Decided: throws.
 - ~~Where does "create draft N+1 from version N" live?~~ Decided: on `WorkflowDefinition` (it enforces the one-draft and numbering rules).
 
 ## Outstanding review items on existing code
@@ -130,14 +174,20 @@ Open questions I must answer (ask me about them in reviews):
 Last reviewed 2026-10-08 (71 tests passing; one CS8618 warning from the `WorkflowDefinitionVersion` stub). Ask me about the open decisions in reviews.
 
 ### Open decisions
-- **`StepId` slug rules**: allowed characters/length (leaning lowercase kebab-case so equality is plain ordinal); frozen from creation or only after `Publish()`? (Rehydration is decided: lenient, see "Identifiers".)
-- **`DateTime` ban enforcement**: BannedApiAnalyzers (`BannedSymbols.txt`) on Domain/Application, or convention only?
-- **Entity signatures**: the constructor and `Rename` take `string` while `Name` returns `DisplayName`. Pick one style before `StepDefinition` copies it.
-- **`Description` normalization**: `""` and `"   "` are stored as given. Does blank collapse to `null`?
-- **xUnit v3**: still on v2 (2.9.3). Migrate or stay?
+- ~~**`StepId` slug rules**~~ Decided 2026-10-08 (see "Identifiers"): strict, frozen from creation.
+- ~~**`HandlerKey` rules**~~ Decided 2026-10-08 (see "Identifiers").
+- ~~**`DateTime` ban enforcement**~~ Decided 2026-10-08: BannedApiAnalyzers (see "Time"). Not set up yet.
+- ~~**Entity signatures**~~ Decided 2026-10-08: value objects, not `string` (see "Identifiers"). `WorkflowDefinition` still takes `string`.
+- ~~**`Description` normalization**~~ Decided 2026-10-08 (see "Naming and uniqueness"). Not implemented yet.
+- ~~**xUnit v3**~~ Decided 2026-10-08: migrate to `xunit.v3`. Not done yet.
 
 ### To do
+- **Next session: `StepId`, test-first.** Open before coding: name of the guarded factory (`From` for consistency with `WorkflowDefinitionId`, or `Create`/`Parse`); what the lenient rehydration path rejects (leaning: null, empty, whitespace); where the 64 cap lives (regex or separate check). Test list, one failing test at a time: valid slugs (`a`, `approve-request`, `step-1`, 64 chars); null/empty/whitespace; starts with digit or `-`; any uppercase; ends with `-`; contains `--`; 65 chars; characters outside the set (`_`, space, `.`, `é`); leading/trailing space (strict, not trimmed); trailing `\n` (`$` pitfall in .NET regex); equality and hash. Then `TransitionKey` (same rule, separate type), then `HandlerKey`, `StepDefinition`, `Transition`, then the version graph and `Validate()`.
 - Phase 4: inject `TimeProvider` in Application and pass `GetUtcNow()` into `Create`.
+- Switch `WorkflowDefinition` constructors/`Create`/`Rehydrate`/`Rename` to take `DisplayName`, and update the tests.
+- `Description`: trim, null/whitespace becomes empty, cap at 1000. The property changes from `string?` to `string`, so the existing nullable-description tests change.
+- Add `Microsoft.CodeAnalysis.BannedApiAnalyzers` and `BannedSymbols.txt` (Domain, and Application when it has code).
+- Migrate `FlowForge.Domain.Tests` to `xunit.v3` (executable output type, Microsoft.Testing.Platform); follow the official migration guide rather than copying v2 setup.
 
 ### Nits
 - Trailing whitespace on blank lines in a few files; missing final newline in `WorkflowDefinitionId.cs`.
@@ -161,5 +211,5 @@ Last reviewed 2026-10-08 (71 tests passing; one CS8618 warning from the `Workflo
 ## Environment
 
 - Ubuntu 24.04 (WSL), .NET 10, solution file `FlowForge.slnx`
-- Projects: `src/FlowForge.{Api,Application,Domain,Infrastructure}`, `tests/FlowForge.Domain.Tests` (xUnit v2)
+- Projects: `src/FlowForge.{Api,Application,Domain,Infrastructure}`, `tests/FlowForge.Domain.Tests` (xUnit v2 today; moving to `xunit.v3`)
 - PostgreSQL planned (likely via Docker) — not set up yet

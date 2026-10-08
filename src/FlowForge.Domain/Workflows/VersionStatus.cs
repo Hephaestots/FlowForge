@@ -1,3 +1,5 @@
+using FlowForge.Domain.Common;
+
 namespace FlowForge.Domain.Workflows;
 
 public sealed record VersionStatus

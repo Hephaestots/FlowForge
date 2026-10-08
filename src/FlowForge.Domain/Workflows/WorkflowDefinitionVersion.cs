@@ -1,5 +1,3 @@
-using FlowForge.Domain.Common;
-
 namespace FlowForge.Domain.Workflows;
 
 public sealed class WorkflowDefinitionVersion
