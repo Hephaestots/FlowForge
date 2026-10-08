@@ -107,7 +107,7 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 
 Model the definition graph in **Domain only** (no persistence, no engine):
 
-- `WorkflowDefinitionVersion` with version number and `Draft`/`Published` status
+- `WorkflowDefinitionVersion` with version number and `VersionStatus` (`Draft`, `Published`, `Retired`, `Discarded`)
 - `StepDefinition` with stable `StepId`, display name, handler key
 - `Transition`: from step → to step + key/label (e.g. `approved` / `rejected`)
 - `Publish()` validates the graph, then freezes it
@@ -127,7 +127,7 @@ Open questions I must answer (ask me about them in reviews):
 
 ## Outstanding review items on existing code
 
-Last reviewed 2026-10-07 (build clean, 34 tests passing). Ask me about the open decisions in reviews.
+Last reviewed 2026-10-08 (71 tests passing; one CS8618 warning from the `WorkflowDefinitionVersion` stub). Ask me about the open decisions in reviews.
 
 ### Open decisions
 - **`StepId` slug rules**: allowed characters/length (leaning lowercase kebab-case so equality is plain ordinal); frozen from creation or only after `Publish()`? (Rehydration is decided: lenient, see "Identifiers".)
@@ -138,7 +138,6 @@ Last reviewed 2026-10-07 (build clean, 34 tests passing). Ask me about the open 
 
 ### To do
 - Phase 4: inject `TimeProvider` in Application and pass `GetUtcNow()` into `Create`.
-- Primary-constructor parameters stay in scope in `WorkflowDefinition`; reading `name` instead of `Name` in a method would silently use stale data. Keep in mind as entities grow.
 
 ### Nits
 - Trailing whitespace on blank lines in a few files; missing final newline in `WorkflowDefinitionId.cs`.
@@ -155,6 +154,9 @@ Last reviewed 2026-10-07 (build clean, 34 tests passing). Ask me about the open 
 - `CreatedAtUtc` → `CreatedAt` (`DateTimeOffset`), normalized to UTC, tested for both entry points (see "Time").
 - `DomainGuard`: `paramName` now used in messages; added `AgainstNull`.
 - Wiring tests assert on `.Name.Value`.
+- `VersionStatus` (closed set: `Draft`, `Published`, `Retired`, `Discarded`) with `CanTransitionTo`, `IsEditable`, `CanStartInstance` and `FromName`; tested (see "Version lifecycle").
+- Domain classes use explicit private constructors, no primary constructors (parameters would stay in scope and could silently shadow the properties).
+- `WorkflowVersion` renamed to `WorkflowDefinitionVersion` (class and file), matching the docs.
 
 ## Environment
 
