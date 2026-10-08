@@ -41,9 +41,29 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - **Steps have stable IDs** separate from display names (renames don't change identity; future migration mapping keys on them).
 - **Migration of running instances** to a newer version is a *wanted later feature*, not now. It will be "re-pin + mapping rules + an `InstanceMigrated` event".
 
+### Version lifecycle (decided 2026-10-07)
+- **`VersionStatus`** is a closed set: `Draft`, `Published`, `Retired`, `Discarded`. Allowed transitions: `Draft → Published`, `Draft → Discarded`, `Published → Retired`, **`Retired → Published`**. `Discarded` is terminal. Only `Draft` is editable; only `Published` can start instances.
+- **`Retired → Published` (reactivation) is intentional.** Use case: a new version turns out to be problematic, so retire it temporarily and re-publish the previous one (rollback). The graph never changes, so immutability still holds.
+- **At most one `Published` version per definition.** Enforced twice:
+  - **Aggregate/Application (to be implemented):** `Publish` and reactivate must check that no other version of the same definition is `Published`. `VersionStatus.CanTransitionTo` only validates a single status's own transitions; it cannot see sibling versions.
+  - **Database (phase 3+):** partial unique index on `DefinitionId` filtered to `Status = 'Published'`, as the backstop against races. Detect violations via `PostgresException.SqlState == "23505"`, like the event-store concurrency check.
+- **Rollback order matters:** retire the problematic version *before* publishing the previous one, in the same transaction. Publishing first would violate the invariant.
+- **Running instances on a retired version continue**; retiring only blocks starting new ones. We want to see which instances are still pinned to a retired version: that is a **read-model/query concern** (projection keyed on `DefinitionId` + `DefinitionVersion`, phase 4), not something the version aggregate tracks.
+- **Reactivation (`Retired → Published`) re-runs graph validation**, same as the first publish. Cheap, and it doesn't rely on trusting old data.
+- **One `Draft` at a time (for now).** A second cross-version invariant, enforced like the Published one: the aggregate rejects creating a draft while one exists, and phase 3+ adds a partial unique index on `DefinitionId` filtered to `Status = 'Draft'`. Easier to relax later than to add. Consequence: "edit" always targets the single draft, and "create draft N+1" fails if a draft exists.
+
 ### Model split
-- `WorkflowDefinition` — identity + metadata (name, description). Metadata is mutable.
-- `WorkflowDefinitionVersion` — the graph (steps, transitions), status `Draft` → `Published`, immutable once published.
+- `WorkflowDefinition` — **the aggregate root**: identity + metadata (name, description; mutable) + the collection of its versions. It owns the cross-version invariants (one `Published`, one `Draft`, version numbering N+1).
+- `WorkflowDefinitionVersion` — **a child entity inside `WorkflowDefinition`, not its own aggregate** (decided 2026-10-07). Holds the graph (steps, transitions) and status; immutable once published.
+  - **The version owns its own graph validation.** `Version.Publish()` validates the graph, then flips the status (same on reactivation). The definition checks the cross-version rule first, then delegates. If the version can't validate itself, it can't be published.
+  - **A version holds no reference to the definition or its siblings.** Its state-changing methods are `internal`, callable only by the definition.
+  - **The definition never reads a sibling version's graph.** Cross-version invariants depend only on number and status; old graphs are inert payload. If loading ever hurts, split along that line (lightweight version entries in the aggregate, graph loaded separately or keyed by `(DefinitionId, Version)`). Never half-load children behind the aggregate's back.
+  - **Planned persistence (phase 3+):** graph as one `jsonb` column (EF owned type mapped to JSON) on the version row, so loading all versions is a single query.
+- **`StepDefinition` and `Transition` are immutable records**; edits are done by replacement. Consequence: creating draft N+1 from version N copies the *collection* (a new list), and sharing the immutable instances is safe (no deep copy). Tests: after editing v2 (add a node, remove the start node), v1's graph equals its snapshot from before the edit (records give value equality); and a v2 transition to a step that exists only in v1 fails v2's validation. (EF owned types can't have two owners, so persistence will need separate instances per version — a phase 3 concern.)
+  - **Guarded factory, closed against `with`.** `StepDefinition` (and `Transition` as needed) is a `sealed record` with a private constructor and **get-only properties, no `init` accessor**, so `step with { ... }` does not compile and can't bypass validation. Edits go through explicit methods (e.g. `step.WithHandlerKey(key)`) that route through the same factory and return a new instance. Factory enforces: valid `StepId` slug, valid `HandlerKey`, non-null display name.
+  - **`HandlerKey` is a value object** (own type, like `DisplayName`), distinct from `StepId`. Its normalization/format/casing rules are still open.
+  - **Graph-level checks** (unique step IDs, transitions reference existing steps, one start, reachability) belong to `Version.Publish()`; whether they are also checked at add-time on a draft is still open.
+- **CQRS direction:** keep the child-entity model for writes; add a read-side query that loads one version directly for execution (phase 4+, don't build ahead). The executor loads by **pinned `(DefinitionId, Version)`**, not "the published one": running instances stay on retired versions. "The published one" is only for starting a new instance. Published graphs are immutable, so a loaded version is cacheable forever under that key.
 - `WorkflowInstance` — one run; separate aggregate; pinned to (DefinitionId, Version).
 
 ### Naming and uniqueness
@@ -58,6 +78,7 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - **`StepId` is a human-chosen slug** (e.g. `approve-request`), not a Guid. One validating factory, no generator. Distinct from the handler key. Slug format rule and when it freezes are still open.
 - **No generic `Id<T>` base yet.** Revisit at the third Guid-backed ID or in phase 3 (one EF/JSON converter for all IDs).
 - **Entities have two named entry points**: `Create(...)` (generates the ID) and `Rehydrate(id, ...)` (takes a typed ID, never reads the clock or generates). Constructors are private; `Rehydrate` rejects a null ID.
+- **`Rehydrate` is deliberately more lenient than `Create`** (decided 2026-10-07): a rule tightened later (slug format, handler-key format) must never make stored data unloadable, so `Create` enforces the current rules and `Rehydrate` does not re-apply them. Keep only the structural guards needed to avoid a broken object (e.g. null checks). This applies to `StepDefinition`, `Transition` and their value objects (`StepId`, `HandlerKey`), so those need a lenient rehydration path separate from the validating factory.
 
 ### Time
 - **No services in the domain.** Entities never receive a `TimeProvider`; they receive a `DateTimeOffset`.
@@ -100,16 +121,16 @@ Invariants enforced by `Publish()` (test-first, one failing test each):
 6. Modifying steps/transitions on a published version throws
 
 Open questions I must answer (ask me about them in reviews):
-- Is `WorkflowDefinitionVersion` its own aggregate or an entity inside `WorkflowDefinition`? (consistency boundary; size after many versions)
+- ~~Is `WorkflowDefinitionVersion` its own aggregate?~~ Decided: child entity inside `WorkflowDefinition` (see "Model split").
 - Are cycles allowed (e.g. rejected → edit → resubmit)? If yes, how does that affect invariant 4?
-- Where does "create draft N+1 from version N" live?
+- ~~Where does "create draft N+1 from version N" live?~~ Decided: on `WorkflowDefinition` (it enforces the one-draft and numbering rules).
 
 ## Outstanding review items on existing code
 
 Last reviewed 2026-10-07 (build clean, 34 tests passing). Ask me about the open decisions in reviews.
 
 ### Open decisions
-- **`StepId` slug rules**: allowed characters/length (leaning lowercase kebab-case so equality is plain ordinal); frozen from creation or only after `Publish()`? Should rehydration use the same validation as creation (a tightened rule must not make old stored data unloadable)?
+- **`StepId` slug rules**: allowed characters/length (leaning lowercase kebab-case so equality is plain ordinal); frozen from creation or only after `Publish()`? (Rehydration is decided: lenient, see "Identifiers".)
 - **`DateTime` ban enforcement**: BannedApiAnalyzers (`BannedSymbols.txt`) on Domain/Application, or convention only?
 - **Entity signatures**: the constructor and `Rename` take `string` while `Name` returns `DisplayName`. Pick one style before `StepDefinition` copies it.
 - **`Description` normalization**: `""` and `"   "` are stored as given. Does blank collapse to `null`?
