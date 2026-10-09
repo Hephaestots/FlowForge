@@ -39,14 +39,18 @@ public sealed class VersionStatusTests
     public void FromName_WithUnknownName_ShouldThrowDomainException(string name)
     {
         // Assert
-        Assert.Throws<DomainException>(() => VersionStatus.FromName(name));
+        var ex = Assert.Throws<DomainException>(() => VersionStatus.FromName(name));
+        
+        Assert.Equal(VersionStatus.Errors.Unknown(name).Code, ex.Error.Code);
     }
 
     [Fact]
     public void FromName_WithNull_ShouldThrowDomainException()
     {
         // Assert
-        Assert.Throws<DomainException>(() => VersionStatus.FromName(null!));
+        var ex = Assert.Throws<DomainException>(() => VersionStatus.FromName(null!));
+        
+        Assert.Equal(VersionStatus.Errors.Unknown(null!), ex.Error);
     }
 
     [Fact]

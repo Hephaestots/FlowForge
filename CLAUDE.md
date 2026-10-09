@@ -69,12 +69,20 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 ### Graph validation (decided 2026-10-08)
 - **A draft may be broken.** An empty draft is the natural starting state; graph problems are *reported*, not prevented, until `Publish()`.
 - **Start step is a pointer**: `WorkflowDefinitionVersion.StartStepId`, nullable, set explicitly with `SetStart(stepId)` (no auto-assign of the first step; can be added later if a designer UI wants it). It is not a flag on `StepDefinition`.
-- **`Validate()` returns a list of issues; `Publish()` throws.** `Publish()` throws a `DomainException` subclass that carries the issue list, so callers and tests assert on codes, not message text.
-- **Issue = code + message + subject.** The code identifies the *rule*; one rule can produce several issues.
-  - **Subject is a closed set of two nullable properties, not a polymorphic type:** `StepId? Step` and `TransitionRef? Transition`. `TransitionRef(From, Key, To?)` leaves `To` null for group issues (`AmbiguousOutcome`) and sets it for per-edge issues (`TransitionTargetNotFound`). A UI switches on the code and reads whichever property applies.
-- **Issue codes are a closed singleton set**, same pattern as `VersionStatus` (private constructor, static instances, `FromName`/`From(code)`). The code's string value is stable and may be persisted or exposed, but there is no lookup table.
+- **`Validate()` returns a list of issues; `Publish()` throws.** `Publish()` throws `ValidationException : DomainException` carrying `IReadOnlyList<Issue>`, so callers and tests assert on codes, not message text. Construction invariants keep the single-`Error` `DomainException` contract (see "Errors").
+- **`Issue(DomainError Error, Subject Subject)` (decided 2026-10-09): built on `DomainError`, one family, not two systems.** The shared vocabulary is a stable code plus a message; the issue only adds *where*. The code identifies the *rule*; one rule can produce several issues.
+  - **`Subject` is a small closed discriminated union** (replaces the earlier "two nullable properties" and `TransitionRef(From, Key, To?)` ideas), one case per *kind of thing an issue is about*. Type-safe, no free-form string path. A UI switches on the code and the subject case.
+    - `Version`: about the version as a whole (`StartStepMissing`, `NoEndStep`).
+    - `Step(StepId)`: about one step (`StepUnreachable`, `StepCannotReachEnd`).
+    - `Edge(From, Key, To)`: about one concrete transition (`TransitionSourceNotFound`, `TransitionTargetNotFound`). `Key` is part of the identity: without it two edges between the same steps are indistinguishable.
+    - `Transition(From, Key)`: about the *group* of transitions leaving `From` under `Key` (`AmbiguousOutcome`). Separate case on purpose: a nullable `To` meaning "not applicable for this code" would be a hidden rule every consumer must know.
+  - **Invariant: each code always uses the same subject kind.** `AmbiguousOutcome` is always `Transition`, `TransitionTargetNotFound` is always `Edge`, and so on. One test per code asserts the subject kind, and consumers (API, UI) may rely on it.
+  - **Still open:** which subject `StartStepNotFound` uses (`Version`, since the pointer is a property of the version, or `Step(missingId)`); and the case name `Transition` collides with the domain `Transition` record (namespace or rename, e.g. `Outcome`).
+- **Issue codes are closed codes, not closed message instances.** The code is the identity; messages and subjects carry the specifics, so parameterized errors (like `VersionStatus`'s `Unknown(name)`) still work. Codes follow the one convention in "Errors".
+- **`Validate()` checks relations only.** Format rules guard new input through the value-object factories (`From`); relation rules guard publishing. A legacy ID loaded through `Restore` never blocks publishing for its format.
 - **Rejected at mutation time (not issues):**
-  - A duplicate `StepId` in `AddStep` (a keyed collection cannot hold two). So "unique step IDs" is *not* a `Validate()` rule.
+  - A duplicate `StepId` in `AddStep` (a keyed collection cannot hold two). So "unique step IDs" is *not* a `Validate()` rule. It is a normal single fail-fast `DomainError` with the stable code `step.duplicate`. **The rule of thumb (decided 2026-10-09):** invariants that can never hold in any state are rejected at mutation, so the aggregate can never contain them; `Validate()` covers states that are legal while drafting but not publishable (no start step, unreachable steps, ambiguous outcomes). A duplicate in `Validate()` could never fire: dead code that looks like coverage.
+  - **Replay caveat:** if an aggregate is ever rebuilt by replaying events through `AddStep`, a duplicate in the stream would throw. Fine as long as events are written only after the command passed; add a replay test if that path appears.
   - Any edit to a non-draft version (invariant 6).
 - **Reported by `Validate()`** (a draft can hold all of these):
   - `StartStepMissing`: no start pointer set.
@@ -97,6 +105,14 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - **`StepId` is frozen from creation.** To change one, remove the step and add a new one, rewriting its edges by hand. No `RenameStep` until the designer needs it; display names are what get renamed.
 - **Reactivation re-runs `Validate()`** like the first publish (see "Version lifecycle").
 
+### Errors (decided 2026-10-09)
+- **`DomainError(string Code, string Message)`** is a record in `Domain/Common`. **`DomainException(DomainError)`** exposes it as `.Error`; the exception message is `Error.Message`. Tests assert on `ex.Error.Code`, never on message text.
+- **`DomainGuard` takes a `DomainError`**, not a parameter name (`CallerArgumentExpression` gave useless messages like "value cannot be null"). Each type owns its errors in a nested `Errors` class of `static readonly DomainError` fields; parameterized errors are static methods (e.g. `VersionStatus.Errors.Unknown(name)`).
+- **Errors are owned per type, deliberately (decided 2026-10-09).** Each type keeps its own `Errors` class and codes, even when two types share a rule (`StepId` and `TransitionKey`): they are separate types so the rules can diverge. Centralize only truly agnostic behavior (e.g. `DomainGuard`'s null/whitespace/empty checks), never rule-specific checks or messages.
+- **Two jobs, same shape.** Construction invariants (`StepId.From`) fail fast with **one** `DomainException`. `Validate()` collects relational issues across the graph and `Publish()` throws a plural `ValidationException : DomainException` (see "Graph validation").
+- **One code convention: `type.rule`**, lowercase with underscores inside each part (e.g. `step_id.too_long`, `display_name.empty`), across construction errors and validation issues, so a code is never ambiguous. Codes are stable and may be persisted or exposed. (Event type names are a separate namespace and stay kebab-case, e.g. `workflow.step-completed`.)
+- **Test structure (decided 2026-10-09):** value-object tests use nested classes per concern (`FromTests`, `RestoreTests`, `EqualityTests`, `ToStringTests`) inside a static class named after the type, with shared data in a `...Cases` class. Keep this for `TransitionKey`, `HandlerKey` and later types; older flat test files are left as they are.
+
 ### Naming and uniqueness
 - **`DisplayName` value object** (Domain/Common) holds every display name: trimmed, never null or whitespace, **casing preserved as entered**.
 - **Names compare case-insensitively** (`OrdinalIgnoreCase` in `Equals`/`GetHashCode`); assert on `.Value` when a test needs exact text.
@@ -110,6 +126,10 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - **`StepId` is a human-chosen slug** (e.g. `approve-request`), not a Guid. One validating factory, no generator. Distinct from the handler key.
   - **Slug rule (decided 2026-10-08):** lowercase `a-z`, digits and `-` as the separator; must start with a letter; length 1 to 64; must not end with `-` or contain `--`. Illustration: `^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){0,63}$`.
   - **Strict rejection, no normalization:** `"Approve-Request"` or `" approve "` throws, with no trimming or lowercasing. Equality is plain ordinal. Frozen from creation (see "Graph validation").
+  - **API shape (decided 2026-10-08):** `StepId.From(string?)` is the strict, guarded entry point (same name as `WorkflowDefinitionId.From`, for consistency across IDs). `StepId.Restore(string?)` is the lenient path for stored data: it rejects only null, empty and whitespace, and does no trimming or normalization. Both build the same record type; equality is `Value` ordinal and there is deliberately **no "was restored" flag** (it would break value equality, and a restored value can only equal a strict one if it is a valid slug anyway).
+  - **Rule placement (revised 2026-10-09, replaces the earlier "regex with `\z`, no loop" decision):** `From` is a **sequence of separate checks, one `DomainError` per rule**, with a hand-rolled character loop (`All(...)`) instead of a regex. A regex cannot say *which* rule failed; specific errors are the goal. This also removes the `$`-before-trailing-`\n` trap. Check order is a **tested contract** (`PrecedenceCases`): empty/null/whitespace, too long (so huge inputs never reach the character loop), must start with a lowercase letter, invalid character, consecutive `--`, trailing `-`. The length cap applies in `From` only, never in `Restore`.
+  - **`StepId.ToString()` returns `Value`** (like `DisplayName`), so messages and logs show the slug, not a record dump. `From` and `Restore` both take `string?`.
+  - Error codes: `step_id.empty`, `step_id.too_long`, `step_id.must_start_with_letter`, `step_id.invalid_character`, `step_id.consecutive_hyphens`, `step_id.trailing_hyphen`; exposed through a public nested `StepId.Errors`.
 - **`HandlerKey` rules (decided 2026-10-08):** lowercase `a-z`, digits and `-`, with `.` allowed as a namespace separator (e.g. `billing.charge-card`; the handler registry is global). Must start with a letter, 1 to 100 characters, no empty segments (`a..b`), no leading or trailing separators. Strict rejection, no normalization: `"Send-Email"` throws. `Rehydrate` stays lenient.
 - **Entity signatures take value objects, not `string`** (decided 2026-10-08): constructors, `Create`, `Rehydrate` and mutators take `DisplayName`, `StepId`, `HandlerKey` and `TransitionKey`. Validation happens once, in the value object's constructor/factory, and entities do not re-check it. Raw strings stay at the edges (API, EF converters) and are parsed into value objects immediately.
 - **`TransitionKey` is a value object**, a separate type from `StepId` that currently shares its rule (lowercase, digits, `-`; same strict rejection). Separate types so either rule can change later without touching the other, and so one can't be passed where the other belongs. No `_` until a real outcome name needs it. **No reserved `"default"` and no fallback routing for now**: that is a new semantic that interacts with `AmbiguousOutcome` and needs its own decision. `Rehydrate` stays lenient for both (see below).
@@ -182,7 +202,7 @@ Last reviewed 2026-10-08 (71 tests passing; one CS8618 warning from the `Workflo
 - ~~**xUnit v3**~~ Decided 2026-10-08: migrate to `xunit.v3`. Not done yet.
 
 ### To do
-- **Next session: `StepId`, test-first.** Open before coding: name of the guarded factory (`From` for consistency with `WorkflowDefinitionId`, or `Create`/`Parse`); what the lenient rehydration path rejects (leaning: null, empty, whitespace); where the 64 cap lives (regex or separate check). Test list, one failing test at a time: valid slugs (`a`, `approve-request`, `step-1`, 64 chars); null/empty/whitespace; starts with digit or `-`; any uppercase; ends with `-`; contains `--`; 65 chars; characters outside the set (`_`, space, `.`, `é`); leading/trailing space (strict, not trimmed); trailing `\n` (`$` pitfall in .NET regex); equality and hash. Then `TransitionKey` (same rule, separate type), then `HandlerKey`, `StepDefinition`, `Transition`, then the version graph and `Validate()`.
+- **Next: `TransitionKey`, test-first** (same rule as `StepId`, separate type; reuse the `StepId` shape: `From`/`Restore`, `Errors` with `transition_key.*` codes, nested test classes). **Decided: duplicate the checks, no shared helper** (errors owned per type; see "Errors"). Then `HandlerKey`, `StepDefinition`, `Transition`, then the version graph and `Validate()`.
 - Phase 4: inject `TimeProvider` in Application and pass `GetUtcNow()` into `Create`.
 - Switch `WorkflowDefinition` constructors/`Create`/`Rehydrate`/`Rename` to take `DisplayName`, and update the tests.
 - `Description`: trim, null/whitespace becomes empty, cap at 1000. The property changes from `string?` to `string`, so the existing nullable-description tests change.
@@ -194,6 +214,8 @@ Last reviewed 2026-10-08 (71 tests passing; one CS8618 warning from the `Workflo
 - Template comments in `Program.cs`; `FlowForge.Api.http` is still tracked.
 
 ### Done
+- `StepId` (2026-10-09): `From`/`Restore`, per-rule `DomainError` codes, tested (135 tests passing, 0 warnings).
+- `DomainError` + `DomainException.Error` + `DomainGuard(…, DomainError)` rolled out to `DisplayName`, `VersionStatus`, `WorkflowDefinition`, `WorkflowDefinitionId` (see "Errors").
 - Renamed `Workflow` → `WorkflowDefinition`.
 - `Guid.Empty` guard on `Id`, tested.
 - `DomainException` replaces `ArgumentException` in the domain.

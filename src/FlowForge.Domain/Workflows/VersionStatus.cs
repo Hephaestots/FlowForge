@@ -26,7 +26,13 @@ public sealed record VersionStatus
     
     public static VersionStatus FromName(string name) =>
         All.SingleOrDefault(vs => vs.Name == name) ??
-        throw new DomainException($"Unknown version status '{name}'.");
+        throw new DomainException(Errors.Unknown(name));
     
     public override string ToString() => Name;
+
+    public static class Errors
+    {
+        public static DomainError Unknown(string name) =>
+            new("version_status.unknown", $"Unknown version status '{name}'.");
+    }
 }

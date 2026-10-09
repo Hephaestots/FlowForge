@@ -13,7 +13,9 @@ public sealed class DisplayNameTests
     public void Constructor_WhenValueIsNullOrWhiteSpace_ShouldThrowDomainException(string? value)
     {
         // Assert
-        Assert.Throws<DomainException>(() => new DisplayName(value));
+        var ex = Assert.Throws<DomainException>(() => new DisplayName(value));
+        
+        Assert.Equal(DisplayName.Errors.Empty.Code, ex.Error.Code);
     }
 
     [Theory]

@@ -1,14 +1,20 @@
 namespace FlowForge.Domain.Common;
 
+public sealed record DomainError(string Code, string Message);
+
 public class DomainException : Exception
 {
-    public DomainException(string message)
-        : base(message)
+    public DomainError Error { get; }
+    
+    public DomainException(DomainError error)
+        : base(error.Message)
     {
+        Error = error;
     }
 
-    public DomainException(string message, Exception innerException)
-        : base(message, innerException)
+    public DomainException(DomainError error, Exception innerException)
+        : base(error.Message, innerException)
     {
+        Error = error;
     }
 }

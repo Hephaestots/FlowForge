@@ -86,11 +86,13 @@ public sealed class WorkflowDefinitionTests
     [Fact]
     public void Rehydrate_WhenIdIsNull_ShouldThrowDomainException()
     {
-        Assert.Throws<DomainException>(() => WorkflowDefinition.Rehydrate(
+        var ex = Assert.Throws<DomainException>(() => WorkflowDefinition.Rehydrate(
             null!,
             "My workflow",
             null,
             DateTimeOffset.UtcNow));
+        
+        Assert.Equal(WorkflowDefinition.Errors.Null.Code, ex.Error.Code);
     }
 
     [Fact]

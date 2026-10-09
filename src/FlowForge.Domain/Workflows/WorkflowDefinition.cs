@@ -15,7 +15,7 @@ public sealed class WorkflowDefinition
 
     private WorkflowDefinition(WorkflowDefinitionId id, string name, string? description, DateTimeOffset createdAt)
     {
-        Id = DomainGuard.AgainstNull(id);
+        Id = DomainGuard.AgainstNull(id, Errors.Null);
         Name = new DisplayName(name);
         Description = description;
         CreatedAt = createdAt.ToUniversalTime();
@@ -30,4 +30,10 @@ public sealed class WorkflowDefinition
     public void Rename(string newName) => Name = new DisplayName(newName);
     
     public void UpdateDescription(string? description) => Description = description;
+
+    public static class Errors
+    {
+        public static readonly DomainError Null =
+            new("workflow_definition.id_null", "Workflow definition id must not be null.");
+    }
 }
