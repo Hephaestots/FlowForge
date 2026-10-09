@@ -120,8 +120,26 @@ public static class StepIdTests
         }
 
         [Fact]
-        public void Equals_FromAndRestoreWithSameValue_ShouldBeEqual() =>
-            Assert.Equal(StepId.From("approve"), StepId.Restore("approve"));
+        public void Equals_FromAndRestoreWithSameValue_ShouldBeEqualWithSameHash()
+        {
+            var strict = StepId.From("approve");
+            var restored = StepId.Restore("approve");
+
+            Assert.Equal(strict, restored);
+            Assert.Equal(strict.GetHashCode(), restored.GetHashCode());
+        }
+
+        [Fact]
+        public void Equals_RestoredValuesDifferingOnlyByCase_ShouldNotBeEqual() =>
+            Assert.NotEqual(StepId.Restore("Approve"), StepId.Restore("approve"));
+
+        [Fact]
+        public void HashSet_ShouldFindEqualIdBuiltThroughOtherEntryPoint()
+        {
+            var set = new HashSet<StepId> { StepId.From("approve") };
+
+            Assert.Contains(StepId.Restore("approve"), set);
+        }
     }
 
     public sealed class ToStringTests

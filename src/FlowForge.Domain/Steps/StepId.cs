@@ -5,7 +5,7 @@ namespace FlowForge.Domain.Steps;
 public sealed record StepId
 {
     private const int MaxLength = 64;
-    
+
     public string Value { get; }
 
     private StepId(string value) => Value = value;
@@ -16,19 +16,19 @@ public sealed record StepId
 
         if (value.Length > MaxLength)
             throw new DomainException(Errors.TooLong);
-        
-        if (!IsLowerLetter(value[0]))
+
+        if (!char.IsAsciiLetterLower(value[0]))
             throw new DomainException(Errors.MustStartWithLetter);
 
-        if (!value.All(c => IsLowerLetter(c) || IsDigit(c) || c == '-'))
+        if (!value.All(c => char.IsAsciiLetterLower(c) || char.IsAsciiDigit(c) || c == '-'))
             throw new DomainException(Errors.InvalidCharacter);
-        
+
         if (value.Contains("--", StringComparison.Ordinal))
             throw new DomainException(Errors.ConsecutiveHyphens);
 
         if (value[^1] == '-')
             throw new DomainException(Errors.TrailingHyphen);
-        
+
         return new StepId(value);
     }
 
@@ -37,18 +37,15 @@ public sealed record StepId
 
     public override string ToString() => Value;
 
-    private static bool IsDigit(char c) => c is >= '0' and <= '9';
-    
-    private static bool IsLowerLetter(char c) => c is >= 'a' and <= 'z';
 
     public static class Errors
     {
         public static readonly DomainError Empty =
-            new("step_id.empty", "Step id must not be empty.");
+            new("step_id.empty", "Step id must not be null or empty.");
 
         public static readonly DomainError TooLong =
             new("step_id.too_long", $"Step id exceeds {MaxLength} characters.");
-        
+
         public static readonly DomainError MustStartWithLetter =
             new("step_id.must_start_with_letter", "Step id must start with a lowercase letter (a-z).");
 
