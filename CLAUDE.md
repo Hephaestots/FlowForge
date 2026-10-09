@@ -72,12 +72,12 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - **`Validate()` returns a list of issues; `Publish()` throws.** `Publish()` throws `ValidationException : DomainException` carrying `IReadOnlyList<Issue>`, so callers and tests assert on codes, not message text. Construction invariants keep the single-`Error` `DomainException` contract (see "Errors").
 - **`Issue(DomainError Error, Subject Subject)` (decided 2026-10-09): built on `DomainError`, one family, not two systems.** The shared vocabulary is a stable code plus a message; the issue only adds *where*. The code identifies the *rule*; one rule can produce several issues.
   - **`Subject` is a small closed discriminated union** (replaces the earlier "two nullable properties" and `TransitionRef(From, Key, To?)` ideas), one case per *kind of thing an issue is about*. Type-safe, no free-form string path. A UI switches on the code and the subject case.
-    - `Version`: about the version as a whole (`StartStepMissing`, `NoEndStep`).
-    - `Step(StepId)`: about one step (`StepUnreachable`, `StepCannotReachEnd`).
+    - `Version`: about the version as a whole (`StartStepNotSet`, `NoEndStep`). With no pointer there is no id to name.
+    - `Step(StepId)`: about one step (`StepUnreachable`, `StepCannotReachEnd`), **or about a step id that resolves to nothing** (`StartStepNotFound` → `Step(missingId)`). The subject is what the problem is about, not where the data is stored: the pointer lives on the version, but the failure is that the id it holds resolves to nothing. The id is what a UI shows ("start step 'x' not found", next to the pointer field, since there is no node to highlight) and what a test asserts on. `StartStepNotSet` and `StartStepNotFound` stay two codes with two fixed subject kinds.
     - `Edge(From, Key, To)`: about one concrete transition (`TransitionSourceNotFound`, `TransitionTargetNotFound`). `Key` is part of the identity: without it two edges between the same steps are indistinguishable.
-    - `Transition(From, Key)`: about the *group* of transitions leaving `From` under `Key` (`AmbiguousOutcome`). Separate case on purpose: a nullable `To` meaning "not applicable for this code" would be a hidden rule every consumer must know.
+    - `Outcome(From, Key)`: about the *group* of transitions leaving `From` under `Key` (`AmbiguousOutcome`). Named `Outcome` (decided 2026-10-09) to avoid colliding with the domain `Transition` record. Separate case on purpose: a nullable `To` meaning "not applicable for this code" would be a hidden rule every consumer must know.
   - **Invariant: each code always uses the same subject kind.** `AmbiguousOutcome` is always `Transition`, `TransitionTargetNotFound` is always `Edge`, and so on. One test per code asserts the subject kind, and consumers (API, UI) may rely on it.
-  - **Still open:** which subject `StartStepNotFound` uses (`Version`, since the pointer is a property of the version, or `Step(missingId)`); and the case name `Transition` collides with the domain `Transition` record (namespace or rename, e.g. `Outcome`).
+  - Subject-per-code summary: `StartStepNotSet`, `NoEndStep` → `Version`; `StartStepNotFound`, `StepUnreachable`, `StepCannotReachEnd` → `Step`; `TransitionSourceNotFound`, `TransitionTargetNotFound` → `Edge`; `AmbiguousOutcome` → `Outcome`.
 - **Issue codes are closed codes, not closed message instances.** The code is the identity; messages and subjects carry the specifics, so parameterized errors (like `VersionStatus`'s `Unknown(name)`) still work. Codes follow the one convention in "Errors".
 - **`Validate()` checks relations only.** Format rules guard new input through the value-object factories (`From`); relation rules guard publishing. A legacy ID loaded through `Restore` never blocks publishing for its format.
 - **Rejected at mutation time (not issues):**
@@ -85,7 +85,7 @@ Don't build ahead of the current phase. Flag it if I'm about to.
   - **Replay caveat:** if an aggregate is ever rebuilt by replaying events through `AddStep`, a duplicate in the stream would throw. Fine as long as events are written only after the command passed; add a replay test if that path appears.
   - Any edit to a non-draft version (invariant 6).
 - **Reported by `Validate()`** (a draft can hold all of these):
-  - `StartStepMissing`: no start pointer set.
+  - `StartStepNotSet`: no start pointer set.
   - `StartStepNotFound`: the start pointer references a step that does not exist.
   - `TransitionSourceNotFound` and `TransitionTargetNotFound`: separate codes on purpose, as precise as possible.
   - `NoEndStep`: no step without outgoing transitions.
@@ -93,7 +93,7 @@ Don't build ahead of the current phase. Flag it if I'm about to.
   - `StepCannotReachEnd`: a step from which no end step can be reached (needed because cycles are allowed).
   - `AmbiguousOutcome`: two or more transitions with the same `(From, TransitionKey)`, regardless of target (routing is a function of those two; even when both lead to the same step, one is redundant). **One issue per `(From, key)` group**, subject `Transition` with `To == null`. An exact duplicate edge is just another case; no special handling. `Validate()` only, never rejected at add-time.
 - **`RemoveStep` may leave things dangling** (the start pointer, transitions pointing at the removed step); `Validate()` reports it. No cascade, no rejection.
-- **An empty draft reports both `StartStepMissing` and `NoEndStep`.** That noise is accepted.
+- **An empty draft reports both `StartStepNotSet` and `NoEndStep`.** That noise is accepted.
 - **Skip derived issues when the root cause is already reported:** `StepUnreachable` is not reported while the start is missing or dangling. `Validate()` is therefore not a set of fully independent checks; ordering matters.
 - **Cycles are allowed** (e.g. rejected → edit → resubmit). Because of that, "at least one end step" is not enough: every step must be able to reach an end step (`StepCannotReachEnd`).
 - **Self-loops (`A → A`) are not allowed.** Enforced in the `Transition` factory at create time (needs no graph context), so it is not a `Validate()` code. `A → B → A` stays legal. Retrying the same step is the handler's `Failed(reason, retryable)`, not a graph edge.
@@ -170,7 +170,7 @@ Model the definition graph in **Domain only** (no persistence, no engine):
 - `Publish()` validates the graph, then freezes it
 
 Invariants (test-first, one failing test each). `Publish()` throws if `Validate()` reports any issue; codes are in "Graph validation":
-1. Start step set and existing (`StartStepMissing`, `StartStepNotFound`: two tests)
+1. Start step set and existing (`StartStepNotSet`, `StartStepNotFound`: two tests)
 2. Step IDs unique within a version (rejected by `AddStep`, not a `Validate()` rule)
 3. Every transition references existing steps (`TransitionSourceNotFound`, `TransitionTargetNotFound`: two tests)
 4. At least one end step (`NoEndStep`)
