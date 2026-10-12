@@ -111,6 +111,8 @@ Don't build ahead of the current phase. Flag it if I'm about to.
 - **Errors are owned per type, deliberately (decided 2026-10-09).** Each type keeps its own `Errors` class and codes, even when two types share a rule (`StepId` and `TransitionKey`): they are separate types so the rules can diverge. Centralize only truly agnostic behavior (e.g. `DomainGuard`'s null/whitespace/empty checks), never rule-specific checks or messages.
 - **Two jobs, same shape.** Construction invariants (`StepId.From`) fail fast with **one** `DomainException`. `Validate()` collects relational issues across the graph and `Publish()` throws a plural `ValidationException : DomainException` (see "Graph validation").
 - **One code convention: `type.rule`**, lowercase with underscores inside each part (e.g. `step_id.too_long`, `display_name.empty`), across construction errors and validation issues, so a code is never ambiguous. Codes are stable and may be persisted or exposed. (Event type names are a separate namespace and stay kebab-case, e.g. `workflow.step-completed`.)
+- **The convention is enforced by a test, not by review** (decided 2026-10-12): `Common/ErrorCodeConventionTests` reflects over every nested `Errors` class in the Domain assembly (static `DomainError` fields, properties, and factory methods taking only `string` parameters, invoked with a dummy argument) and checks that every code matches `^[a-z]+(_[a-z]+)*\.[a-z]+(_[a-z]+)*\z`, that **all codes are unique across types**, and that no message is blank. It is agnostic by design: it checks shape only, so types still own their codes and messages. New `Errors` classes are picked up automatically, **but the nested class must be named exactly `Errors`**. A factory with non-string parameters makes the test throw (fail loudly) until the test learns to call it. Digits are not allowed in codes yet; widen the pattern when a real code needs one. A discovery test asserts the `StepId`, `TransitionKey` and `HandlerKey` classes are found, so the test cannot go green over zero cases (add new value objects there). Verified by mutation: changing `handler_key.too_long` to `handler_key.tooLong` fails it. **Not enforced (deliberately open):** that the `type` part equals the owning type's name in snake_case, because the planned `step.duplicate` (raised by the version's `AddStep`) names the concept, not the owner.
+- **Messages are not tested** (only non-blank): a wrong message, like the "Step id" text once copy-pasted into `TransitionKey`, is caught in review. Accepted trade-off.
 - **Test structure (decided 2026-10-09):** value-object tests use nested classes per concern (`FromTests`, `RestoreTests`, `EqualityTests`, `ToStringTests`) inside a static class named after the type, with shared data in a `...Cases` class. Keep this for `TransitionKey`, `HandlerKey` and later types; older flat test files are left as they are.
 
 ### Naming and uniqueness
@@ -207,7 +209,7 @@ Last reviewed 2026-10-08 (71 tests passing; one CS8618 warning from the `Workflo
 - ~~**xUnit v3**~~ Decided 2026-10-08: migrate to `xunit.v3`. Not done yet.
 
 ### To do
-- **Next: `HandlerKey`, test-first** (same shape as `StepId`/`TransitionKey`: `From`/`Restore`, `Errors` with `handler_key.*` codes, nested test classes, checks duplicated, no shared helper; rules, check order and precedence rows in "Identifiers"). First test: `From("billing.charge-card")` preserves the value; then one test per rule in the recorded order. Then `StepDefinition`, `Transition`, then the version graph and `Validate()`.
+- **Next: `StepDefinition`, test-first** (sealed record, private constructor, get-only properties so `with` cannot bypass the guard; `Create`/`Rehydrate`; takes `StepId`, `DisplayName`, `HandlerKey`; edits like `WithHandlerKey` return a new instance; see "Model split"). Then `Transition` (self-loop rejected in its factory), then the version graph and `Validate()`.
 - Phase 4: inject `TimeProvider` in Application and pass `GetUtcNow()` into `Create`.
 - Switch `WorkflowDefinition` constructors/`Create`/`Rehydrate`/`Rename` to take `DisplayName`, and update the tests.
 - `Description`: trim, null/whitespace becomes empty, cap at 1000. The property changes from `string?` to `string`, so the existing nullable-description tests change.
@@ -215,10 +217,13 @@ Last reviewed 2026-10-08 (71 tests passing; one CS8618 warning from the `Workflo
 - Migrate `FlowForge.Domain.Tests` to `xunit.v3` (executable output type, Microsoft.Testing.Platform); follow the official migration guide rather than copying v2 setup.
 
 ### Nits
-- Trailing whitespace on blank lines in a few files; missing final newline in `WorkflowDefinitionId.cs`.
+- Trailing whitespace on blank lines in a few files (found in `DisplayNameTests.cs`; the value-object files and their tests are clean); missing final newline in `WorkflowDefinitionId.cs`.
+- `HandlerKey.Errors` is alphabetical while `StepId` and `TransitionKey` list errors in check order (cosmetic; pick one).
 - Template comments in `Program.cs`; `FlowForge.Api.http` is still tracked.
 
 ### Done
+- `HandlerKey` (2026-10-12): nine ordered rules with per-segment checks, own `handler_key.*` codes, own tests and `HandlerKeyCases` (precedence rows including `a..-`, `a.-.`, `.a.`, 101 dots; `a-.b` pins that the trailing-hyphen check is per segment, not whole-string). Review fixes: `tooLong` code corrected to `too_long`, inverted `TrailingSeparator` message fixed, namespaced sample keys. 341 tests passing.
+- `ErrorCodeConventionTests` (2026-10-12): reflection-based convention guard (see "Errors").
 - `TransitionKey` (2026-10-09): same shape as `StepId`, 50-character cap, own `transition_key.*` codes and messages (copy-pasted "Step id" messages fixed), own test suite and `TransitionKeyCases`. Tests assert codes only, so a wrong message would not be caught; accepted trade-off of per-type duplication. Redundant `GetHashCode` overrides removed from both value objects; trailing whitespace cleaned in the four files.
 - `StepId` (2026-10-09): `From`/`Restore`, per-rule `DomainError` codes, tested (135 tests passing, 0 warnings).
 - `DomainError` + `DomainException.Error` + `DomainGuard(…, DomainError)` rolled out to `DisplayName`, `VersionStatus`, `WorkflowDefinition`, `WorkflowDefinitionId` (see "Errors").
