@@ -40,7 +40,7 @@ public sealed class VersionStatusTests
     {
         // Assert
         var ex = Assert.Throws<DomainException>(() => VersionStatus.FromName(name));
-        
+
         Assert.Equal(VersionStatus.Errors.Unknown(name).Code, ex.Error.Code);
     }
 
@@ -49,7 +49,7 @@ public sealed class VersionStatusTests
     {
         // Assert
         var ex = Assert.Throws<DomainException>(() => VersionStatus.FromName(null!));
-        
+
         Assert.Equal(VersionStatus.Errors.Unknown(null!), ex.Error);
     }
 

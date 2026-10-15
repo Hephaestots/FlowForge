@@ -184,6 +184,27 @@ public static class HandlerKeyCases
         (HandlerKey.Errors.TooLong.Code, new string('a', 101))
     ];
 
+    private static readonly (string Code, string Input)[] LegacyOnlyRows =
+    [
+        (HandlerKey.Errors.MustStartWithLetter.Code, " handler"),
+        (HandlerKey.Errors.MustStartWithLetter.Code, " handler "),
+        (HandlerKey.Errors.InvalidCharacter.Code,    "handler "),
+        (HandlerKey.Errors.InvalidCharacter.Code,    "handler\n"),
+        (HandlerKey.Errors.InvalidCharacter.Code,    "handler\texecute"),
+        (HandlerKey.Errors.MustStartWithLetter.Code, "Billing.Charge-Card"),
+    ];
+
+    public static TheoryData<string, string> LegacyFormatCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string>();
+            foreach (var (code, input) in InvalidFormatRows.Concat(LegacyOnlyRows))
+                data.Add(code, input);
+            return data;
+        }
+    }
+
     public static TheoryData<string> ValidKeys =>
     [
         "a",

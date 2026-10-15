@@ -72,7 +72,7 @@ public sealed class WorkflowDefinitionIdTests
     public void From_WhenValueIsEmpty_ShouldThrowDomainException()
     {
         var ex = Assert.Throws<DomainException>(() => WorkflowDefinitionId.From(Guid.Empty));
-        
+
         Assert.Equal(WorkflowDefinitionId.Errors.Empty.Code, ex.Error.Code);
     }
 }

@@ -177,6 +177,23 @@ public static class StepIdCases
         (StepId.Errors.TrailingHyphen.Code, "abc-"),
     ];
 
+    // Stored ids that today's rules reject: From throws, Restore must keep them as stored.
+    private static readonly (string Code, string Input)[] LegacyOnlyRows =
+    [
+        (StepId.Errors.TooLong.Code, new string('a', 65)),
+    ];
+
+    public static TheoryData<string, string> LegacyFormatCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string>();
+            foreach (var (code, input) in InvalidFormatRows.Concat(LegacyOnlyRows))
+                data.Add(code, input);
+            return data;
+        }
+    }
+
     public static TheoryData<string> ValidIds =>
     [
         "a",

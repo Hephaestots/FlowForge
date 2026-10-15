@@ -14,7 +14,7 @@ public sealed class DisplayNameTests
     {
         // Assert
         var ex = Assert.Throws<DomainException>(() => new DisplayName(value));
-        
+
         Assert.Equal(DisplayName.Errors.Empty.Code, ex.Error.Code);
     }
 

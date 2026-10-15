@@ -13,9 +13,10 @@ public sealed partial class ErrorCodeConventionTests
     private static partial Regex CodePattern();
 
     private static readonly Type[] ErrorClasses =
-        typeof(DomainError).Assembly.GetTypes()
+    [
+        .. typeof(DomainError).Assembly.GetTypes()
             .Where(t => t is { Name: "Errors", DeclaringType: not null })
-            .ToArray();
+    ];
 
     public static TheoryData<string, string> Codes => ToTheoryData(e => e.Error.Code);
 
@@ -25,8 +26,19 @@ public sealed partial class ErrorCodeConventionTests
     [InlineData("StepId")]
     [InlineData("TransitionKey")]
     [InlineData("HandlerKey")]
-    public void Discovery_ShouldFindTheNestedErrorsClassOfEachValueObject(string ownerName) =>
+    [InlineData("StepDefinition")]
+    [InlineData("WorkflowDefinition")]
+    [InlineData("DisplayName")]
+    [InlineData("VersionStatus")]
+    [InlineData("WorkflowDefinitionId")]
+    public void Discovery_ShouldFindTheNestedErrorsClassOfEachTypeThatOwnsErrors(string ownerName) =>
         Assert.Contains(ErrorClasses, t => t.DeclaringType!.Name == ownerName);
+
+    // Keep in sync with the list above. A new `Errors` class fails this until it is registered there,
+    // and a renamed one (e.g. `Error`) fails the per-type row instead of silently dropping out.
+    [Fact]
+    public void Discovery_ShouldFindExactlyTheRegisteredErrorsClasses() =>
+        Assert.Equal(8, ErrorClasses.Length);
 
     [Theory]
     [MemberData(nameof(Codes))]
