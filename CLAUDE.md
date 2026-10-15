@@ -221,6 +221,12 @@ Last reviewed 2026-10-15 (437 tests passing, 0 errors; one unrelated CS8618 warn
 
 ### To do
 - **Next: `Transition`, test-first** (sealed record, same guarded-factory shape as `StepDefinition`; self-loop rejected in its factory; takes `StepId` from/to and a `TransitionKey`). Then the version graph and `Validate()`.
+  - **Open questions for `Transition` (raised 2026-10-15, to answer before the first test; answer 2 and 3 first, they shape the public surface):**
+    1. **Shape and nulls.** `Transition(StepId From, TransitionKey Key, StepId To)` with generated structural equality (needed for removal by full value)? Null guards once in the shared constructor, one code per field (`transition.from_null`, `.key_null`, `.to_null`)?
+    2. **Self-loop and `Rehydrate`.** `From == To` is rejected in the factory with a new code (`transition.self_loop`?). Does `Rehydrate` also reject it (structural invariant) or skip it (policy, like the description cap, so stored data always loads)?
+    3. **Edit methods.** Does `Transition` need any `With*` method, or is remove-and-add enough (no cosmetic field, any change makes it a different edge)? Don't build ahead if the version graph doesn't need one.
+    4. **`ImmutableMembersTests`.** Cover both records through one shared test without duplicating it?
+    5. **Precedence.** When several fields are null, which error comes first? Field order as a tested contract, like `StepId`'s check order?
 - **Shared strict comparison helper** (field by field, ordinal: id, name, handler key values) for the isolation/snapshot tests that come with the version graph. Not needed until then.
 - Phase 4: inject `TimeProvider` in Application and pass `GetUtcNow()` into `Create`.
 - Add `Microsoft.CodeAnalysis.BannedApiAnalyzers` and `BannedSymbols.txt` (Domain, and Application when it has code).
